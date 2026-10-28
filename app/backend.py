@@ -1,6 +1,7 @@
 """Turns raw TrueNAS answers into one tidy snapshot, and runs write actions."""
 import asyncio
 import json
+import re
 import time
 from urllib.parse import urlsplit, urlunsplit
 
@@ -114,10 +115,20 @@ def _icon(a):
     return None
 
 
+def _title(a):
+    """TrueNAS gives every app installed from YAML the title "Custom App". Use the app's own name instead."""
+    t, n = (_g(a, "metadata", "title") or "").strip(), a.get("name") or ""
+    if t.lower() not in ("", "custom app", "custom-app"):
+        return t
+    if n.lower() == "truepilot":
+        return "TruePilot"
+    return " ".join(w.capitalize() for w in re.split(r"[-_\s]+", n) if w) or n
+
+
 def _apps(raw, host=""):
-    return [{"name": a.get("name"), "title": _g(a, "metadata", "title") or a.get("name"),
+    return [{"name": a.get("name"), "title": _title(a),
              "state": a.get("state") or "UNKNOWN", "version": a.get("human_version") or a.get("version"),
-             "upgrade": bool(a.get("upgrade_available")), "links": _links(a, host), "icon": _icon(a)} for a in raw or []]
+             "upgrade": bool(a.get("upgrade_available")), "links": _links(a, host), "icon": _icon(a) or ("/icon.svg" if (a.get("name") or "").lower() == "truepilot" else None)} for a in raw or []]
 
 
 def _alerts(raw):
