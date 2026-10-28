@@ -1,0 +1,7 @@
+.venv/
+data/
+data_demo/
+config.json
+__pycache__/
+*.pyc
+dist/
