@@ -1,11 +1,13 @@
 import asyncio
 import json
+import logging
 import re
 import secrets
 import shutil
 import socket
 import time
 from collections import deque
+from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,11 +16,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, net, scheduler as sched, wol
+from . import config, events, net, scheduler as sched, wol
 from .backend import TrueNASBackend
 from .db import DB
 from .demo import DemoBackend
 from .security import Throttle, Vault, check_pw, hash_pw, sha
+from .tg import Telegram
+from .tg.routes import make_router as tg_router
 from .truenas import TrueNASClient
 
 cfg = config.load()
@@ -143,6 +147,10 @@ def new_task(did, title, fn, kind="job", target=""):
         tasks.pop(k, None)
     tasks[tid] = {"id": tid, "device_id": did, "title": title, "status": "running", "message": "", "started": time.time(),
                   "kind": kind, "target": target}
+    pk = power_kind(title, kind, target)
+    label = power_label(pk, did, title)
+    if pk:
+        power_started(pk, did, label)
 
     async def run():
         try:
@@ -150,11 +158,103 @@ def new_task(did, title, fn, kind="job", target=""):
         except Exception as e:
             tasks[tid].update(status="failed", message=str(e))
         tasks[tid]["ended"] = time.time()
+        if pk:
+            power_finished(pk, did, label, target, tasks[tid]["status"] == "done", tasks[tid]["message"])
         hub.cache.pop(did, None)
         pc_cache["t"] = 0
 
     spawn(run())
     return tid
+
+
+# ---------- power events: told to the tray icon and to Telegram ----------
+def power_kind(title, kind, target):
+    """restart / shutdown / wake for NAS and PC power jobs. App jobs are not power events."""
+    if str(target).startswith("app:"):
+        return None
+    if kind == "wake":
+        return "wake"
+    t = title.split(" ", 1)[0].lower()
+    return t if t in ("restart", "shutdown") else None
+
+
+def power_label(pk, did, title):
+    d = db.one("SELECT name FROM devices WHERE id=?", (did,)) if (pk in ("restart", "shutdown") and did) else None
+    return d["name"] if d else (title.split(" ", 1)[1] if " " in title else title)
+
+
+def power_started(pk, did, label):
+    if pk in ("restart", "shutdown"):
+        events.expect[did] = (pk, time.time())
+    text = {"restart": f"Restart command sent. {label} will be offline for a few minutes.", "shutdown": f"Shutdown command sent. {label} stays off until you wake it.",
+            "wake": "Wake packet sent. Watching for it to start."}[pk]
+    events.emit(pk, {"restart": f"Restarting {label}", "shutdown": f"Shutting down {label}", "wake": f"Waking {label}"}[pk], text, dev_id=did)
+
+
+def power_finished(pk, did, label, target, ok, message):
+    if pk == "wake":
+        events.recent["wake_done:" + str(target)] = time.time()
+        if ok:
+            events.emit("wake_done", f"{label} is on", message, "ok", target=target)
+        else:
+            events.emit("wake_failed", f"{label} did not wake", message, "bad", target=target)
+    elif not ok:
+        events.emit("power_failed", f"{pk.capitalize()} failed on {label}", message, "bad", dev_id=did)
+
+
+async def nas_is_up(d):
+    if d["kind"] == "demo":
+        try:
+            return bool((await hub.get(d["id"]).snapshot()).get("ok"))
+        except Exception:
+            return False
+    return await net.tcp_ok(d["host"], d["port"], 2.5)
+
+
+async def power_watch():
+    """Every 10 seconds: is the NAS answering? Tells you when it goes away and when it is back. PCs are checked every 30 seconds."""
+    seen, n = {}, 0
+    while True:
+        await asyncio.sleep(10)
+        n += 1
+        try:
+            for d in db.q("SELECT * FROM devices WHERE kind IN ('truenas','demo')"):
+                up = await nas_is_up(d)
+                st = seen.setdefault(d["id"], {"up": up, "fails": 0, "since": time.time()})
+                if up:
+                    if not st["up"]:
+                        gone = int(time.time() - st["since"])
+                        done = time.time() - events.recent.get(f"wake_done:dev:{d['id']}", 0) < 90
+                        events.expect.pop(d["id"], None)
+                        if not done:
+                            events.emit("online", f"{d['name']} is back online", f"It was away for {gone // 60} min {gone % 60} s." if gone >= 60 else f"It was away for {gone} s.", "ok", dev_id=d["id"])
+                    st.update(up=True, fails=0, since=time.time() if not st["up"] else st["since"])
+                else:
+                    st["fails"] += 1
+                    if st["up"] and st["fails"] >= 2:
+                        what = events.expect.get(d["id"])
+                        planned = what and time.time() - what[1] < 1200
+                        st.update(up=False, since=time.time())
+                        if planned and what[0] == "shutdown":
+                            events.emit("offline", f"{d['name']} is off", "It stays off until you wake it.", "info", dev_id=d["id"], can_wake=bool(d["mac"]))
+                        elif planned:
+                            events.emit("offline", f"{d['name']} is restarting", "It should be back in a few minutes.", "info", dev_id=d["id"])
+                        else:
+                            events.emit("offline", f"{d['name']} stopped answering", "It may have restarted, lost power or lost its network.", "warn", dev_id=d["id"], can_wake=bool(d["mac"]))
+            if n % 3 == 0:
+                for p in await pcs_with_status():
+                    if p["kind"] != "pc" or p["state"] not in ("on", "off"):
+                        continue
+                    key = ("pc", p["id"])
+                    prev = seen.get(key)
+                    seen[key] = p["state"]
+                    if prev and prev != p["state"]:
+                        events.emit("pc_" + p["state"], f"{p['name']} is now {p['state']}", "", "info", pc_id=p["id"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger("truepilot").exception("power watch failed")
+
 
 
 def need_write(dev):
@@ -264,6 +364,7 @@ async def run_scheduled(s):
                     res = "failed: " + str(e)
                 db.x("UPDATE schedules SET last_result=? WHERE id=?", (res, s["id"]))
                 audit("scheduler", 0, "wake", label, s["name"], res)
+                tgm.job_done(s["name"], res)
                 return res.split(": ", 1)[1]
 
             new_task(0, f"Wake {label}", go, kind="wake", target=pc["task"])
@@ -279,14 +380,19 @@ async def run_scheduled(s):
         res = "failed: " + str(e)
     db.x("UPDATE schedules SET last_result=? WHERE id=?", (res, s["id"]))
     audit("scheduler", s["device_id"], s["action"], s["target"], s["name"], res)
+    tgm.job_done(s["name"], res)
 
 
 @asynccontextmanager
 async def lifespan(app):
     demo_seed()
     t = asyncio.create_task(sched.loop(db, run_scheduled))
+    tgm.start()
+    pw = asyncio.create_task(power_watch())
     yield
     t.cancel()
+    pw.cancel()
+    await tgm.stop()
     for did in list(hub.b):
         await hub.drop(did)
 
@@ -478,9 +584,9 @@ async def fresh_confirm(body: FreshIn, request: Request, response: Response):
     fresh_tokens.pop(body.token, None)
     for did in list(hub.b):
         await hub.drop(did)
-    for t_ in ("devices", "schedules", "wol_targets", "sessions", "app_links", "app_favs", "agent_tokens", "approvals", "web_apps"):
+    for t_ in ("devices", "schedules", "wol_targets", "sessions", "app_links", "app_favs", "agent_tokens", "approvals", "web_apps", "tg_bots"):
         db.x(f"DELETE FROM {t_}")
-    db.x("DELETE FROM settings WHERE k IN ('pw_hash','read_only','wake_only')")
+    db.x("DELETE FROM settings WHERE k IN ('pw_hash','read_only','wake_only','tg_cfg','notify_tray')")
     pc_cache["t"] = 0
     audit(ip_of(request), None, "start_fresh", "", "everything wiped", "ok")
     response.delete_cookie("tp_session", path="/")
@@ -1578,6 +1684,40 @@ async def resolve_approval(rid: int, body: Resolve, s=Depends(auth)):
     if status == "failed":
         return {"ok": False, "error": note}
     return {"ok": True, "result": result}
+
+
+# ---------- notifications on this PC (tray icon) ----------
+events.enabled = lambda name: db.get("notify_" + name, "1") != "0"
+
+
+@app.get("/api/notify")
+async def notify_get(s=Depends(auth)):
+    return {"tray": events.state["tray"], "on": events.enabled("tray")}
+
+
+class NotifyIn(BaseModel):
+    tray: bool
+
+
+@app.put("/api/notify")
+async def notify_put(body: NotifyIn, s=Depends(auth)):
+    db.put("notify_tray", "1" if body.tray else "0")
+    audit(s["label"], 0, "notify_tray", "on" if body.tray else "off")
+    return await notify_get(s)
+
+
+@app.post("/api/notify/test")
+async def notify_test(s=Depends(auth)):
+    events.emit("test", "TruePilot notifications work", "This is a test message from TruePilot.", "info")
+    return {"ok": True}
+
+
+# ---------- Telegram (alerts and commands on your phone) ----------
+tgm = Telegram(SimpleNamespace(
+    db=db, vault=vault, hub=hub, audit=audit, tasks=tasks, new_task=new_task, start_app_task=start_app_task, pcs_with_status=pcs_with_status,
+    wake_pc_task=wake_pc_task, watch_wake=watch_wake, webapps_with_status=webapps_with_status, sched_out=sched_out, human_cron=human_cron,
+    need_write=need_write, read_only=read_only, computer=COMPUTER, version=config.VERSION))
+app.include_router(tg_router(tgm, auth))
 
 
 # ---------- web ----------

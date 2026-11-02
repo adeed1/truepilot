@@ -547,7 +547,7 @@ const grp = (title, sub, ...rows) => h('section', { class: 'card' }, h('div', { 
 const srow = (ic, text, right, onclick, cls = '') => h('button', { class: 'row srow ' + cls, onclick }, ic ? icon(ic) : h('span'), h('div', { class: 't' }, text), h('span', { class: 'mute' }, right || icon('right')));
 const wide = g => { g.classList.add('wide'); return g; };
 async function pageSettings() {
-  const [set, sess, toks] = await Promise.all([api('/settings'), api('/sessions'), S.me.app ? [] : api('/agent-tokens')]), theme = localStorage.getItem('tp.theme') || '';
+  const [set, sess, toks, tg, nt] = await Promise.all([api('/settings'), api('/sessions'), S.me.app ? [] : api('/agent-tokens'), S.me.app ? null : api('/telegram').catch(() => null), S.me.app ? null : api('/notify').catch(() => null)]), theme = localStorage.getItem('tp.theme') || '';
   const ro = h('button', { class: 'sw', role: 'switch', 'aria-checked': String(set.read_only), 'aria-label': 'Read-only mode', onclick: async e => { try { const v = e.currentTarget.getAttribute('aria-checked') !== 'true'; await api('/settings', { method: 'PUT', body: { read_only: v } }); e.currentTarget.setAttribute('aria-checked', String(v)); toast(v ? 'Read-only mode on' : 'Read-only mode off'); } catch (x) { toast(x.message, true); } } });
   return h('div', {}, h('div', { class: 'dh' }, h('h1', {}, 'Settings')), h('div', { class: 'grid' },
     grp('Devices', 'NAS units TruePilot watches', S.devices.length ? S.devices.map(d => h('div', { class: 'row' }, lamp('ok'), h('div', { class: 't' }, d.name), h('div', { class: 'acts wrap' },
@@ -558,6 +558,8 @@ async function pageSettings() {
       !S.me.app && srow('user', 'Signed-in devices', String(sess.length), () => sessionsDialog(sess))),
     !S.me.app && grp('Agent access', 'Let an AI agent such as Hermes look after your NAS', toks.map(t => h('div', { class: 'row' }, lamp(t.last_used ? 'ok' : 'off'), h('div', { class: 't' }, t.name), h('button', { class: 'btn small ghost', style: 'grid-row:span 2;grid-column:3', onclick: async () => { if (confirm(`Revoke ${t.name}? It stops working at once.`)) { await api('/agent-tokens/' + t.id, { method: 'DELETE' }); renderMain(); } } }, 'Revoke'),
       h('div', { class: 's' }, `${t.level === 'control' ? 'Read, wake, start/stop/restart apps' : 'Read only'}, ${t.last_used ? 'used ' + ago(t.last_used * 1000) : 'never used'}`))), srow('bot', 'Create agent token', '', agentDialog)),
+    tg && tgGroup(tg),
+    nt && nt.tray && grp('Notifications on this PC', 'Messages near the clock', h('div', { class: 'row' }, icon('bell'), h('div', {}, h('div', { class: 't' }, 'Tray icon notifications'), h('div', { class: 's' }, 'When the NAS restarts, shuts down, wakes, goes offline or comes back')), tgSwitch(nt.on, 'Tray icon notifications', async v => { try { await api('/notify', { method: 'PUT', body: { tray: v } }); toast(v ? 'Tray notifications on' : 'Tray notifications off'); } catch (e) { toast(e.message, true); } })), srow('refresh', 'Send a test notification', '', async () => { try { await api('/notify/test', { method: 'POST' }); toast('Sent. Look near the clock.'); } catch (e) { toast(e.message, true); } })),
     grp('Appearance', '', h('div', { class: 'row' }, icon('moon'), h('div', { class: 't' }, 'Theme'), h('div', { class: 'seg', role: 'group', 'aria-label': 'Theme' }, [['', 'Match device'], ['light', 'Light'], ['dark', 'Dark']].map(([v, t]) => h('button', { 'aria-pressed': String(theme === v), onclick: () => { v ? localStorage.setItem('tp.theme', v) : localStorage.removeItem('tp.theme'); applyTheme(); renderMain(); } }, t))))),
     grp('History and help', '', srow('history', 'Activity log', '', auditDialog), srow('refresh', 'About TruePilot', 'Version ' + (S.me.version || '1.0'), () => toast('TruePilot ' + (S.me.version || '1.0') + ' on ' + (S.me.computer || '')))),
     wide(grp('Danger zone', '', srow('power', S.me.app ? 'Erase app data' : 'Start fresh', '', startFresh, 'dg')))));
@@ -603,6 +605,85 @@ async function auditDialog() {
   const body = h('p', { class: 'mute' }, 'Loading...'); modal('Activity log', body, [h('button', { class: 'btn', onclick: closeDlg }, 'Close')]);
   const rows = await api('/audit'); body.replaceChildren(!rows.length ? h('p', {}, 'Nothing yet.') : rows.map(r => h('div', { style: 'margin-bottom:8px' }, h('b', {}, r.action.replace(/_/g, ' ')), ' ' + (r.target || ''), h('span', { class: 'chip' + (r.result === 'ok' ? '' : ' bad'), style: 'margin-left:6px' }, r.result),
     h('div', { class: 'mute small' }, `${new Date(r.ts * 1000).toLocaleString()}, ${r.who}${r.detail ? ', ' + r.detail : ''}`))));
+}
+
+/* ---------- Telegram: alerts and commands on your phone ---------- */
+const tgLamp = b => ({ ok: 'ok', bad: 'bad', wait: 'run', off: 'off' })[b.state] || 'off';
+const tgSwitch = (on, label, onchange) => h('button', { class: 'sw', role: 'switch', 'aria-checked': String(!!on), 'aria-label': label, onclick: e => { const el = e.currentTarget, v = el.getAttribute('aria-checked') !== 'true'; el.setAttribute('aria-checked', String(v)); onchange && onchange(v, el); } });
+async function tgPut(path, method, body, okMsg) { try { const r = await api('/telegram' + path, { method, body }); if (okMsg) toast(okMsg); renderMain(); return r; } catch (e) { toast(e.message, true); renderMain(); return null; } }
+function tgGroup(tg) {
+  const c = tg.config, paused = c.pause_until * 1000 > Date.now(), n = tg.bots.length;
+  const sub = !n ? 'Not set up yet' : !c.on ? 'Off. TruePilot is silent on Telegram.' : !c.sender ? 'This copy does not send Telegram messages' : !tg.bots.some(b => b.linked) ? 'On, but no chat is linked yet' : paused ? 'Alerts paused until ' + when(c.pause_until) : 'On. Alerts and commands are working.';
+  const anyOk = tg.bots.some(b => b.state === 'ok');
+  return grp('Telegram', 'Alerts and commands on your phone',
+    n ? h('div', { class: 'row' }, lamp(!c.on ? 'off' : anyOk ? 'ok' : 'warn'), h('div', {}, h('div', { class: 't' }, 'Telegram bot'), h('div', { class: 's' }, sub)), tgSwitch(c.on, 'Telegram bot', v => tgPut('/config', 'PUT', { on: v }, v ? 'Telegram is on' : 'Telegram is off'))) : h('p', { class: 'empty' }, 'Get alerts and control TruePilot from Telegram on your phone.'),
+    tg.bots.map(b => h('div', { class: 'row' }, lamp(tgLamp(b)), h('div', {}, h('div', { class: 't' }, b.label), h('div', { class: 's' }, `@${b.username}, ${b.purpose_label}, ` + (b.linked ? 'linked to ' + b.chat_name : 'not linked yet'))),
+      h('div', { class: 'acts' }, tgSwitch(b.enabled, 'Turn ' + b.label + ' on or off', v => tgPut('/bots/' + b.id, 'PUT', { enabled: v })), h('button', { class: 'btn small ghost', onclick: () => tgEditDialog(b) }, 'Edit')),
+      b.problem && h('div', { class: 's', style: 'color:var(--bad);grid-column:2 / -1' }, b.problem), !b.linked && h('div', { class: 's', style: 'grid-column:2 / -1' }, 'Press Edit, then Link my chat to finish.'))),
+    srow('plus', n ? 'Add another bot' : 'Add Telegram bot', '', () => tgAddDialog()),
+    n > 0 && srow('settings', 'What Telegram does', '', () => tgOptionsDialog(tg)),
+    n > 0 && srow('bell', 'Pause alerts', paused ? 'until ' + when(c.pause_until) : '', () => tgPauseDialog(tg)),
+    n > 0 && srow('power', 'Disable Telegram now', '', async () => { if (confirm('Switch Telegram off now? Alerts and commands stop until you turn it on again.')) tgPut('/disable-now', 'POST', undefined, 'Telegram is off'); }, 'dg'));
+}
+function tgSteps(n) { return h('div', { style: 'display:flex;gap:6px;margin:0 0 12px' }, [1, 2, 3].map(i => h('span', { style: `flex:1;height:4px;border-radius:2px;background:${i <= n ? 'var(--acc)' : 'var(--line)'}` }))); }
+function tgAddDialog() {
+  const label = h('input', { type: 'text', value: 'My phone', autocomplete: 'off' }), purpose = h('select', {}, [['control', 'Control and alerts (takes my commands)'], ['alerts', 'Alerts only (never takes commands)']].map(([v, t]) => h('option', { value: v }, t)));
+  const token = h('input', { type: 'password', autocomplete: 'off', placeholder: 'Paste the token here' }), m = msgBox(), go = h('button', { class: 'btn' }, 'Save and continue');
+  go.onclick = async () => { go.disabled = true; try { const r = await api('/telegram/bots', { method: 'POST', body: { label: label.value, token: token.value, purpose: purpose.value } }); renderMain(); tgLinkDialog(r.bots.find(b => b.id === r.id), true); } catch (e) { m.set(e.message); go.disabled = false; } };
+  modal('Add Telegram bot', h('div', {}, tgSteps(1), h('p', { class: 'note' }, 'Step 1 of 3: make a bot and paste its token.'),
+    h('ol', { style: 'margin:0 0 12px;padding-left:20px;line-height:1.7' }, h('li', {}, 'Open Telegram and message ', h('b', {}, '@BotFather'), '.'), h('li', {}, 'Send ', h('code', {}, '/newbot'), ' and answer its questions.'), h('li', {}, 'Copy the token it gives you (numbers, a colon, then letters).')),
+    h('label', { class: 'f' }, 'Name for this bot', label), h('label', { class: 'f' }, 'What it does', purpose), h('label', { class: 'f' }, 'Bot token', token, h('small', {}, 'TruePilot stores it encrypted and never shows it again.')), m),
+    [h('button', { class: 'btn ghost', onclick: closeDlg }, 'Cancel'), go]);
+}
+async function tgLinkDialog(b, adding) {
+  let code = null, stop = false, timer = null;
+  const body = h('div', {}), out = msgBox(), done = h('button', { class: 'btn', disabled: true }, 'Finish');
+  const shut = () => { stop = true; clearInterval(timer); closeDlg(); renderMain(); };
+  const draw = (info, linked) => { body.replaceChildren(adding && tgSteps(2), linked ? h('p', { class: 'note ok' }, `Linked to ${linked}. TruePilot will only answer this Telegram account.`) : h('div', {},
+    h('p', { class: 'note' }, (adding ? 'Step 2 of 3: ' : '') + 'link your Telegram account.'),
+    h('ol', { style: 'margin:0 0 12px;padding-left:20px;line-height:1.7' }, h('li', {}, 'Open your bot in Telegram: ', h('a', { class: 'link', href: `https://t.me/${b.username}`, target: '_blank', rel: 'noopener' }, '@' + b.username), '.'), h('li', {}, 'Press Start, then send it this code:')),
+    h('div', { class: 'mono', style: 'font-size:32px;letter-spacing:6px;text-align:center;margin:8px 0' }, info.code), h('p', { class: 'mute small' }, 'The code works once, for 10 minutes. Only the account that sends it gets linked.'), out)); done.disabled = !linked; };
+  const newCode = async () => { try { const r = await api(`/telegram/bots/${b.id}/pair`, { method: 'POST' }); code = r; draw(r, null); } catch (e) { out.set(e.message); } };
+  const test = h('button', { class: 'btn ghost', disabled: !b.linked }, 'Send test message');
+  test.onclick = async () => { try { await api(`/telegram/bots/${b.id}/test`, { method: 'POST' }); toast('Test message sent. Check Telegram.'); } catch (e) { toast(e.message, true); } };
+  done.onclick = shut;
+  modal(adding ? 'Add Telegram bot' : 'Link my chat', body, [h('button', { class: 'btn ghost', onclick: shut }, 'Close'), h('button', { class: 'btn ghost', onclick: newCode }, 'New code'), test, done]);
+  await newCode();
+  timer = setInterval(async () => { if (stop || !$('#dlg').open) return clearInterval(timer); try { const v = await api('/telegram'), nb = v.bots.find(x => x.id === b.id); if (nb && nb.linked) { clearInterval(timer); test.disabled = false; draw(code || {}, nb.chat_name); } } catch (e) { /* keep waiting */ } }, 2000);
+}
+function tgEditDialog(b) {
+  const label = h('input', { type: 'text', value: b.label, autocomplete: 'off' }), purpose = h('select', {}, [['control', 'Control and alerts (takes my commands)'], ['alerts', 'Alerts only (never takes commands)']].map(([v, t]) => h('option', { value: v, selected: b.purpose === v }, t)));
+  const token = h('input', { type: 'password', autocomplete: 'off', placeholder: 'Leave blank to keep the saved token' }), m = msgBox(), save = h('button', { class: 'btn' }, 'Save');
+  save.onclick = async () => { save.disabled = true; try { await api('/telegram/bots/' + b.id, { method: 'PUT', body: { label: label.value, purpose: purpose.value, token: token.value } }); closeDlg(); toast('Bot saved'); renderMain(); } catch (e) { m.set(e.message); save.disabled = false; } };
+  const test = h('button', { class: 'btn ghost' }, 'Send test message');
+  test.onclick = async () => { try { await api(`/telegram/bots/${b.id}/test`, { method: 'POST' }); m.set('Test message sent. Check Telegram.', false); } catch (e) { m.set(e.message); } };
+  modal('Edit bot: @' + b.username, h('div', {}, h('label', { class: 'f' }, 'Name for this bot', label), h('label', { class: 'f' }, 'What it does', purpose, h('small', {}, 'Alerts only sends you alerts and ignores anything you type. Another person can link their own Telegram to an alerts-only bot.')),
+    h('label', { class: 'f' }, 'Bot token', token, h('small', {}, 'Paste a new one only if BotFather gave you a new token. Your chat link stays.')),
+    h('div', { class: 'row', style: 'padding-left:0;padding-right:0' }, icon('user'), h('div', {}, h('div', { class: 't' }, 'Chat'), h('div', { class: 's' }, b.linked ? 'Linked to ' + b.chat_name : 'Not linked yet')), h('div', { class: 'acts wrap' },
+      h('button', { class: 'btn small ghost', onclick: () => tgLinkDialog(b, false) }, b.linked ? 'Link a different chat' : 'Link my chat'), b.linked && h('button', { class: 'btn small ghost', onclick: async () => { await tgPut(`/bots/${b.id}/unlink`, 'POST', undefined, 'Chat unlinked'); closeDlg(); } }, 'Unlink'))), m),
+    [h('button', { class: 'btn ghost', style: 'margin-right:auto;color:var(--bad)', onclick: async () => { if (confirm(`Remove ${b.label}? TruePilot forgets its token and stops using it.`)) { await tgPut('/bots/' + b.id, 'DELETE', undefined, 'Bot removed'); closeDlg(); } } }, 'Remove bot'), h('button', { class: 'btn ghost', onclick: closeDlg }, 'Cancel'), test, save]);
+}
+function tgOptionsDialog(tg) {
+  const c = tg.config, draft = JSON.parse(JSON.stringify(c)), swr = (title, sub, on, set) => h('div', { class: 'row', style: 'padding-left:0;padding-right:0' }, h('span'), h('div', {}, h('div', { class: 't' }, title), sub && h('div', { class: 's' }, sub)), tgSwitch(on, title, set));
+  const num = (v, min, max) => h('input', { type: 'number', value: v, min, max, style: 'width:80px' }), time = v => h('input', { type: 'time', value: v });
+  const space = num(c.space_pct, 50, 99), offl = num(c.offline_min, 1, 60), rep = num(c.repeat_h, 1, 48), daily = time(c.daily_at), qs = time(c.quiet.start), qe = time(c.quiet.end), m = msgBox();
+  const TYPES = [['pool', 'Disk and pool problems', 'A pool is degraded, a disk fails a test or runs hot'], ['space', 'Space warning', 'A pool is nearly full'], ['app', 'App stopped or crashed', 'And when it is running again'], ['nas', 'NAS offline or back', 'The NAS stops answering'], ['truenas', "TrueNAS's own alerts", 'Warnings and errors TrueNAS raises'],
+    ['power', 'NAS power events', 'Restart, shut down, wake, offline and back online'], ['updates', 'Updates waiting', 'Apps with a new version'], ['jobs', 'Job results', 'Scheduled jobs that finished or failed'], ['pc', 'PC online or offline', 'Your wake-list PCs (can be chatty)'], ['daily', 'Daily summary', 'One short message each day']];
+  const save = h('button', { class: 'btn' }, 'Save');
+  save.onclick = async () => { Object.assign(draft, { space_pct: +space.value, offline_min: +offl.value, repeat_h: +rep.value, daily_at: daily.value || c.daily_at }); Object.assign(draft.quiet, { start: qs.value || c.quiet.start, end: qe.value || c.quiet.end }); const r = await tgPut('/config', 'PUT', draft, 'Telegram settings saved'); if (r) closeDlg(); };
+  const lab = (t, el, help) => h('label', { class: 'f' }, t, el, help && h('small', {}, help));
+  modal('What Telegram does', h('div', {}, h('h3', {}, 'Parts'), swr('Alerts', 'TruePilot messages you when something is wrong', draft.parts.alerts, v => (draft.parts.alerts = v)), swr('Commands', 'You message TruePilot to look or act', draft.parts.commands, v => (draft.parts.commands = v)),
+    h('h3', { style: 'margin-top:16px' }, 'Alert types'), TYPES.map(([k, t, s]) => swr(t, s, draft.types[k], v => (draft.types[k] = v))),
+    h('h3', { style: 'margin-top:16px' }, 'Details'), lab('Warn when a pool is this full (%)', space), lab('Say the NAS is offline after (minutes)', offl), lab('Remind me about a problem every (hours)', rep), lab('Daily summary time', daily),
+    h('h3', { style: 'margin-top:16px' }, 'Quiet hours'), swr('Quiet hours', 'Only serious problems come through', draft.quiet.on, v => (draft.quiet.on = v)), h('div', { class: 'grid2', style: 'grid-template-columns:1fr 1fr' }, lab('From', qs), lab('To', qe)),
+    swr('Serious problems still come through', 'Disk failure, NAS offline', draft.quiet.red, v => (draft.quiet.red = v)),
+    h('h3', { style: 'margin-top:16px' }, 'This copy of TruePilot'), swr('This copy sends Telegram messages', 'Keep this on for ONE copy only (the always-on PC). Turn it off on the NAS copy.', draft.sender, v => (draft.sender = v)), m),
+    [h('button', { class: 'btn ghost', onclick: closeDlg }, 'Cancel'), save]);
+}
+function tgPauseDialog(tg) {
+  const paused = tg.config.pause_until * 1000 > Date.now(), pick = async body => { const r = await tgPut('/pause', 'POST', body, body.minutes === 0 ? 'Alerts are back on' : 'Alerts paused'); if (r) closeDlg(); };
+  modal('Pause alerts', h('div', {}, h('p', { class: 'mute' }, paused ? 'Alerts are paused until ' + when(tg.config.pause_until) + '. They come back on their own.' : 'Alerts stay quiet for a while, then come back on their own. Commands keep working.'),
+    h('div', { class: 'chips' }, h('button', { class: 'btn ghost', onclick: () => pick({ minutes: 60 }) }, '1 hour'), h('button', { class: 'btn ghost', onclick: () => pick({ minutes: 480 }) }, '8 hours'), h('button', { class: 'btn ghost', onclick: () => pick({ until: 'morning' }) }, 'Until morning'), paused && h('button', { class: 'btn', onclick: () => pick({ minutes: 0 }) }, 'Resume now'))), [h('button', { class: 'btn ghost', onclick: closeDlg }, 'Close')]);
 }
 
 /* ---------- Add / edit device ---------- */

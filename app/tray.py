@@ -44,6 +44,23 @@ def icon_image(color=GREEN, size=64):
     return im
 
 
+SHOWN = ("restart", "shutdown", "wake", "wake_done", "wake_failed", "power_failed", "online", "offline", "test")
+
+
+def tray_handler(icon):
+    """Shows power events (restart, shut down, wake, NAS offline or back) as a message near the clock."""
+    from . import events
+
+    def handle(ev):
+        if ev["kind"] not in SHOWN or not events.enabled("tray"):
+            return
+        try:
+            icon.notify((ev.get("text") or ev["title"])[:240], ev["title"][:60])
+        except Exception:
+            pass  # notifications are a nice extra; never let one break TruePilot
+    return handle
+
+
 def start_server(host, port):
     import uvicorn
     from .main import app
@@ -109,6 +126,9 @@ def main():
                         pystray.MenuItem(f"Phone address: {phone}", copy_),
                         pystray.MenuItem("Quit TruePilot", quit_))
     icon = pystray.Icon("TruePilot", icon_image(GREEN), "TruePilot is running", menu)
+    from . import events
+    events.state["tray"] = True
+    events.subscribe("tray", tray_handler(icon))
 
     def watch(ic):
         ic.visible = True

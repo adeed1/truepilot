@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS approvals(
   reason TEXT, status TEXT, created REAL, decided REAL, task TEXT, note TEXT);
 CREATE TABLE IF NOT EXISTS web_apps(
   id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, port INTEGER, secure INTEGER DEFAULT 0, kind TEXT DEFAULT 'other', runs_on TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS tg_bots(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT, username TEXT, bot_id INTEGER, token_enc TEXT, purpose TEXT DEFAULT 'control',
+  enabled INTEGER DEFAULT 1, chat_id INTEGER, chat_name TEXT, created REAL);
 CREATE TABLE IF NOT EXISTS wol_targets(
   id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, mac TEXT, broadcast TEXT, ip TEXT, port INTEGER);
 """
