@@ -7,6 +7,7 @@ CALLBACKS = {}  # "a" -> (function, level)
 
 # levels: "safe" = only shows things, "act" = does one small thing (start an app, wake a PC),
 #         "power" = the powerful group (needs the Powerful commands switch)
+#         "approve" = answering a request that is waiting for your approval (needs the Approval requests switch)
 
 
 class Command:

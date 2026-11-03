@@ -1572,6 +1572,7 @@ async def agent_request(body: AgentRequest, a=Depends(agent_auth)):
     rid = db.x("INSERT INTO approvals(token_id,token_name,action,device_id,app,reason,status,created,params,summary) VALUES(?,?,?,?,?,?,'pending',?,?,?)",
                (a["id"], a["name"], body.action, d["id"] if d else 0, body.app, body.reason[:300], time.time(), json.dumps(params), summary))
     audit(f"agent: {a['name']}", d["id"] if d else 0, "request_" + body.action, summary[:80], body.reason[:200], "pending")
+    tgm.approval_created(rid)
     return {"request_id": rid, "status": "pending", "summary": summary, "message": "Waiting for the owner to approve it in TruePilot. Check back with the request id."}
 
 
@@ -1686,6 +1687,61 @@ async def resolve_approval(rid: int, body: Resolve, s=Depends(auth)):
     return {"ok": True, "result": result}
 
 
+# ---------- helpers the Telegram bot uses to do big things (same code as the screens) ----------
+async def tg_host(did, action, who, run_anyway=False):
+    dev = hub.row(did)
+    snap = await hub.snapshot(did)
+    hostname = (snap.get("system") or {}).get("hostname") or dev["name"]
+    r = await host_act(did, action, ActIn(confirm=True, confirm_text=hostname, run_anyway=run_anyway), {"label": who})
+    return r["task"]
+
+
+async def tg_upgrade(did, name, who):
+    r = await app_act(did, name, "upgrade", ActIn(confirm=True), {"label": who})
+    return r["task"]
+
+
+async def tg_resolve(rid, approve, who, run_anyway=False):
+    """Answers a request from an agent. Returns (what happened, task id or None)."""
+    r = db.one("SELECT * FROM approvals WHERE id=?", (rid,))
+    if not r or r["status"] != "pending":
+        raise HTTPException(404, "That request was already answered or has expired.")
+    if time.time() - r["created"] > 1800:
+        db.x("UPDATE approvals SET status='expired', decided=? WHERE id=?", (time.time(), rid))
+        raise HTTPException(404, "That request has expired.")
+    me = {"label": who}
+    if not approve:
+        await resolve_approval(rid, Resolve(status="denied"), me)
+        return "Denied. Nothing was changed.", None
+    if r["action"] in CONFIG_ACTIONS:
+        out = await resolve_approval(rid, Resolve(status="approved"), me)
+        if out.get("ok") is False:
+            raise HTTPException(400, out.get("error") or "It didn't work")
+        return out.get("result") or "Done", None
+    if r["action"] == "upgrade_app":
+        tid = await tg_upgrade(r["device_id"], r["app"], who)
+        text = f"Upgrading {r['app']}"
+    else:
+        act = "restart" if r["action"] == "restart_nas" else "shutdown"
+        tid = await tg_host(r["device_id"], act, who, run_anyway)
+        text = f"{'Restart' if act == 'restart' else 'Shutdown'} command sent"
+    await resolve_approval(rid, Resolve(status="approved", task=tid), me)
+    return text, tid
+
+
+async def tg_sched_patch(sid, enabled, who):
+    return await patch_sched(sid, SchedPatch(enabled=enabled), {"label": who})
+
+
+async def tg_sched_delete(sid, who):
+    return await del_sched(sid, {"label": who})
+
+
+def tg_sched_run(s):
+    spawn(run_scheduled(s))
+
+
+
 # ---------- notifications on this PC (tray icon) ----------
 events.enabled = lambda name: db.get("notify_" + name, "1") != "0"
 
@@ -1716,7 +1772,8 @@ async def notify_test(s=Depends(auth)):
 tgm = Telegram(SimpleNamespace(
     db=db, vault=vault, hub=hub, audit=audit, tasks=tasks, new_task=new_task, start_app_task=start_app_task, pcs_with_status=pcs_with_status,
     wake_pc_task=wake_pc_task, watch_wake=watch_wake, webapps_with_status=webapps_with_status, sched_out=sched_out, human_cron=human_cron,
-    need_write=need_write, read_only=read_only, computer=COMPUTER, version=config.VERSION))
+    need_write=need_write, read_only=read_only, computer=COMPUTER, version=config.VERSION,
+    host=tg_host, upgrade=tg_upgrade, resolve=tg_resolve, sched_patch=tg_sched_patch, sched_delete=tg_sched_delete, sched_run=tg_sched_run))
 app.include_router(tg_router(tgm, auth))
 
 

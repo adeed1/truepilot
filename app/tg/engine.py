@@ -62,6 +62,7 @@ class Telegram:
         self.pair = {}       # bot id -> {code, exp, tries}
         self.sel = {}        # bot id -> the NAS chosen with /nas
         self.cbmap = {}      # long button data
+        self.confirms = {}   # one-time Approve/Deny questions asked by your own commands
         self.bg = set()
         self.warned = {}
         self.tasks = []
@@ -207,6 +208,8 @@ class Telegram:
 
     def _allowed(self, b, level):
         parts = self.store.cfg()["parts"]
+        if level == "approve":
+            return "" if parts["approvals"] else "Approval requests are switched off in TruePilot Settings."
         if not parts["commands"]:
             return "Telegram commands are switched off in TruePilot Settings."
         if level == "power" and not parts["powerful"]:
@@ -416,6 +419,36 @@ class Telegram:
                     continue
                 raise
         return None
+
+    # ---------- "Are you sure?" with Approve and Deny ----------
+    def confirm(self, call, text, run, approve_label="✅ Approve"):
+        """Shows Approve and Deny. Nothing happens until Approve is tapped. Each question works once, for 10 minutes."""
+        now = time.time()
+        for k in [k for k, v in self.confirms.items() if v["exp"] < now]:
+            self.confirms.pop(k, None)
+        tok = secrets.token_hex(4)
+        self.confirms[tok] = {"bot": call.bot["id"], "exp": now + 600, "run": run}
+        return Screen("⚠️ " + text + "\n\n<i>Nothing happens until you tap Approve.</i>", [[B(approve_label, f"cy:{tok}"), B("❌ Deny", f"cn:{tok}")]])
+
+    # ---------- requests from agents (Hermes) ----------
+    def approval_created(self, rid):
+        if self.active() and self.store.cfg()["parts"]["approvals"]:
+            self.spawn(self._send_approval(rid))
+
+    async def _send_approval(self, rid):
+        r = self.tp.db.one("SELECT * FROM approvals WHERE id=?", (rid,))
+        if not r:
+            return
+        warn = {"restart_nas": "\n⚠️ Apps and shares will be unavailable for a few minutes.", "shutdown_nas": "\n⚠️ The NAS stays off until you wake it.",
+                "upgrade_app": "\n⚠️ The app is unavailable while it updates."}.get(r["action"], "")
+        text = f"🤖 <b>{esc(r['token_name'])}</b> asks to {esc(r['summary'] or r['action'])}." + (f"\nReason: {esc(r['reason'])}" if r["reason"] else "") + warn + "\n<i>It expires in 30 minutes.</i>"
+        rows = [[B("✅ Approve", f"ay:{rid}"), B("❌ Deny", f"an:{rid}")]]
+        for b in self.store.bots():
+            if b["enabled"] and b["chat_id"] and b["purpose"] == "control":
+                try:
+                    await self._send(self.store.token(b), b["chat_id"], Screen(text, rows))
+                except Exception as e:
+                    log.warning("approval message failed: %s", e)
 
     # ---------- alerts out ----------
     def alert_bots(self):
