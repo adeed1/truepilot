@@ -130,5 +130,8 @@ async def updates_screen(call):
     u = (s.get("system") or {}).get("update") or {}
     if u.get("available"):
         out.append(f"• TrueNAS itself ({esc(str(u.get('version') or ''))})")
-    out.append("\n<i>Updating is done in TruePilot for now, because it needs your approval.</i>" if ups else "")
-    return Screen("\n".join(out).strip(), [[B("📦 Apps", "ap:0:a"), B("« Menu", "m")]])
+    out.append("\nTap an app to update it. TruePilot asks Approve first." if ups else "")
+    rows = [[B(f"⬆️ {a['title']}", f"ug:{a['name']}")] for a in ups[:10]]
+    if len(ups) > 1:
+        rows.append([B("⬆️ Update all", "uga")])
+    return Screen("\n".join(out).strip(), rows + [[B("📦 Apps", "ap:0:a"), B("« Menu", "m")]])

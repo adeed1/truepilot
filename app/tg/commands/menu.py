@@ -22,8 +22,9 @@ async def menu_screen(call):
     return Screen("🚀 <b>TruePilot</b>\n" + head, [
         [B("📊 Status", "st"), B("📦 Apps", "ap:0:a")],
         [B("💽 Storage", "sto"), B("💻 PCs", "pc")],
-        [B("⏰ Schedules", "sc"), B("🔕 Snooze", "sn")],
-        [B("🌐 Web Apps", "wa"), B("❓ Help", "hp")],
+        [B("⏰ Schedules", "sc"), B("⬆️ Updates", "up")],
+        [B("⏻ Power", "pw"), B("🌐 Web Apps", "wa")],
+        [B("🔕 Snooze", "sn"), B("❓ Help", "hp")],
     ])
 
 

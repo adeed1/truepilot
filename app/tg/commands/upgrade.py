@@ -57,6 +57,15 @@ async def upgrade_cb(call):
 
 @command("upgradeall", "Update every app that has an update (asks Approve first)", level="act")
 async def upgradeall(call):
+    return await ask_all(call)
+
+
+@callback("uga", "act")
+async def upgradeall_cb(call):
+    return await ask_all(call)
+
+
+async def ask_all(call):
     d, s = await call.snap()
     call.tp.need_write(call.tp.hub.row(d["id"]))
     ups = [a for a in s.get("apps") or [] if a.get("upgrade")]

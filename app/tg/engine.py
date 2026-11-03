@@ -12,12 +12,12 @@ from datetime import datetime, timedelta
 from fastapi import HTTPException
 
 from . import registry
-from .api import TgError, acall
+from .api import TgError, acall, diagnose
 from .store import PURPOSES, Store
 from .ui import B, Say, Screen, esc
 
 log = logging.getLogger("truepilot.telegram")
-POLL_SECONDS = 8
+POLL_SECONDS = int(os.environ.get("TRUEPILOT_TG_POLL", "8"))
 
 
 class Call:
@@ -63,6 +63,8 @@ class Telegram:
         self.sel = {}        # bot id -> the NAS chosen with /nas
         self.cbmap = {}      # long button data
         self.confirms = {}   # one-time Approve/Deny questions asked by your own commands
+        self.last_ok = {}    # bot id -> when Telegram last answered
+        self.slow = set()    # bots that switched to gentle polling because long waits time out
         self.bg = set()
         self.warned = {}
         self.tasks = []
@@ -147,21 +149,23 @@ class Telegram:
 
     # ---------- listening ----------
     async def _poll(self, bid, token):
-        offset, first = None, True
+        offset, first, poll, fails = None, True, POLL_SECONDS, 0
         self.state[bid] = (None, "Connecting…")
         while True:
             try:
                 if first:  # skip anything sent while TruePilot was off, so old taps never run later
-                    old = await acall(token, "getUpdates", {"offset": -1, "timeout": 0}, 15)
+                    old = await acall(token, "getUpdates", {"offset": -1, "timeout": 0}, 30)
                     if old:
                         offset = old[-1]["update_id"] + 1
                     first = False
                     await self._publish_commands(bid, token)
-                params = {"timeout": POLL_SECONDS, "allowed_updates": ["message", "callback_query"]}
+                params = {"timeout": poll, "allowed_updates": ["message", "callback_query"]}
                 if offset:
                     params["offset"] = offset
-                ups = await acall(token, "getUpdates", params, POLL_SECONDS + 10)
+                ups = await acall(token, "getUpdates", params, poll + 12)
                 self.state[bid] = (True, "")
+                self.last_ok[bid] = time.time()
+                fails = 0
                 for u in ups:
                     offset = u["update_id"] + 1
                     try:
@@ -170,20 +174,32 @@ class Telegram:
                         raise
                     except Exception:
                         log.exception("telegram update failed")
+                if poll == 0:
+                    await asyncio.sleep(2)
             except asyncio.CancelledError:
                 raise
             except TgError as e:
+                fails += 1
+                if poll > 0 and "timed out" in str(e).lower():
+                    # Some networks cut off a request that waits several seconds. Ask quickly and often instead.
+                    poll = 0
+                    self.slow.add(bid)
+                    log.warning("Telegram long waits time out on this network; using gentle polling")
+                    continue
                 if e.code == 409:
                     msg = "Another copy of TruePilot is using this bot. Turn Telegram off on one of them."
                 elif e.code in (401, 404):
                     msg = "Telegram doesn't accept this bot token. Use Change token."
                 else:
                     msg = str(e)
-                self.state[bid] = (False, msg)
-                await asyncio.sleep(30 if e.code in (401, 404, 409) else 8)
+                if e.code in (401, 404, 409) or fails >= 3:
+                    self.state[bid] = (False, msg)
+                await asyncio.sleep(30 if e.code in (401, 404, 409) else 5)
             except Exception as e:
-                self.state[bid] = (False, str(e)[:150])
-                await asyncio.sleep(8)
+                fails += 1
+                if fails >= 3:
+                    self.state[bid] = (False, str(e)[:150])
+                await asyncio.sleep(5)
 
     async def _publish_commands(self, bid, token):
         b = self.store.bot(bid)
@@ -191,7 +207,7 @@ class Telegram:
             return
         cmds = [{"command": c.name, "description": c.desc[:80]} for c in registry.COMMANDS.values() if c.menu and c.level != "power"]
         try:
-            await acall(token, "setMyCommands", {"commands": sorted(cmds, key=lambda x: x["command"])[:90]}, 15)
+            await acall(token, "setMyCommands", {"commands": sorted(cmds, key=lambda x: x["command"])[:90]}, 30)
         except TgError:
             pass
 
@@ -302,7 +318,7 @@ class Telegram:
 
     async def _callback(self, b, token, cq, msg):
         try:
-            await acall(token, "answerCallbackQuery", {"callback_query_id": cq["id"]}, 10)
+            await acall(token, "answerCallbackQuery", {"callback_query_id": cq["id"]}, 20)
         except TgError:
             pass
         if b["purpose"] != "control":
@@ -400,9 +416,9 @@ class Telegram:
             try:
                 if edit_id:
                     params["message_id"] = edit_id
-                    await acall(token, "editMessageText", params, 15)
+                    await acall(token, "editMessageText", params, 30)
                     return edit_id
-                r = await acall(token, "sendMessage", params, 15)
+                r = await acall(token, "sendMessage", params, 30)
                 return r["message_id"]
             except TgError as e:
                 msg = str(e).lower()
@@ -504,8 +520,12 @@ class Telegram:
 
     # ---------- used by the settings screens ----------
     async def check_token(self, token):
-        me = await acall(token.strip(), "getMe", {}, 15)
+        me = await acall(token.strip(), "getMe", {}, 30)
         return {"id": me.get("id"), "username": me.get("username") or ""}
+
+    async def check_connection(self, bid):
+        b = self.store.bot(bid)
+        return await asyncio.to_thread(diagnose, self.store.token(b))
 
     async def send_test(self, bid):
         b = self.store.bot(bid)
@@ -522,5 +542,6 @@ class Telegram:
             bots.append({"id": b["id"], "label": b["label"], "username": b["username"], "purpose": b["purpose"], "purpose_label": PURPOSES.get(b["purpose"], b["purpose"]),
                          "enabled": bool(b["enabled"]), "linked": bool(b["chat_id"]), "chat_name": b["chat_name"] or "",
                          "state": "off" if ok is None and not txt else ("ok" if ok else ("bad" if ok is False else "wait")), "problem": txt if ok is False else "",
+                         "last_ok": self.last_ok.get(b["id"]), "slow": b["id"] in self.slow,
                          "pair": ({"code": p["code"], "expires": p["exp"]} if p and time.time() < p["exp"] else None)})
         return {"config": c, "bots": bots, "purposes": PURPOSES, "active": bool(c["on"] and c["sender"]), "now": time.time()}

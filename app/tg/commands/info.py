@@ -25,7 +25,11 @@ async def schedules_screen(call):
         out.append(f"{'🟢' if j['enabled'] else '⚪'} <b>{esc(j['name'])}</b> · {esc(call.tp.human_cron(j['cron']))}\n   next: {nxt}{res}")
     if not rows:
         out.append("No scheduled jobs yet. Add them in TruePilot under Schedules.")
-    return Screen("\n".join(out)[:3900], [[B("🔄 Refresh", "sc"), B("« Menu", "m")]])
+    kb = []
+    for r in rows[:8]:
+        j = call.tp.sched_out(r)
+        kb.append(([B(f"▶ {r['name'][:22]}", f"jr:{r['id']}")] if r["kind"] != "host" else []) + [B("⏸ Pause" if j["enabled"] else "▶ Resume", f"{'jp' if j['enabled'] else 'jc'}:{r['id']}")])
+    return Screen("\n".join(out)[:3900], kb + [[B("🔄 Refresh", "sc"), B("« Menu", "m")]])
 
 
 @command("activity", "The last things TruePilot did")

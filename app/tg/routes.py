@@ -126,6 +126,11 @@ def make_router(eng, auth):
             raise HTTPException(400, str(e))
         return {"ok": True}
 
+    @r.post("/bots/{bid}/check")
+    async def check(bid: int, s=Depends(auth)):
+        need_bot(bid)
+        return {"steps": await eng.check_connection(bid)}
+
     @r.post("/pause")
     async def pause(body: PauseIn, s=Depends(auth)):
         if body.until == "morning":

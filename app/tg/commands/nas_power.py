@@ -1,7 +1,7 @@
 """Restart or shut down the NAS. Always asks Approve first."""
 from fastapi import HTTPException
 
-from ..registry import command
+from ..registry import callback, command
 from ..ui import B, Screen, esc
 from ._util import wait_task
 
@@ -41,4 +41,32 @@ async def restart(call):
 
 @command("nasshutdown", "Shut down the NAS (asks Approve first)", level="act")
 async def shutdown(call):
+    return await ask(call, "shutdown")
+
+
+async def power_screen(call):
+    d = call.device()
+    return Screen(f"⏻ <b>Power</b> for <b>{esc(d['name'])}</b>\nRestart and shut down ask Approve first.", [
+        [B("🔄 Restart NAS", "nr"), B("⏻ Shut down NAS", "ns")],
+        [B("⏰ Wake a PC or the NAS", "pcw")],
+        [B("💻 PCs", "pc"), B("« Menu", "m")]])
+
+
+@command("power", "Power panel: restart, shut down, wake")
+async def power_cmd(call):
+    return await power_screen(call)
+
+
+@callback("pw", "act")
+async def power_cb(call):
+    return await power_screen(call)
+
+
+@callback("nr", "act")
+async def restart_cb(call):
+    return await ask(call, "restart")
+
+
+@callback("ns", "act")
+async def shutdown_cb(call):
     return await ask(call, "shutdown")
