@@ -1019,17 +1019,25 @@ async def wake_pc(pid: int, s=Depends(auth)):
 
 
 # ---------- web apps (links to anything running on your network) ----------
+class AddrIn(BaseModel):
+    label: str = ""
+    host: str
+    port: int | None = None
+    secure: bool = False
+
+
 class WebAppIn(BaseModel):
     name: str = ""
-    host: str
+    host: str = ""
     port: int | None = None
     secure: bool = False
     kind: str = "other"
     runs_on: str = ""
+    addrs: list[AddrIn] | None = None
 
 
-def webapp_clean(body: WebAppIn):
-    host, secure, port = body.host.strip(), body.secure, body.port
+def addr_clean(host, port, secure):
+    host, secure = (host or "").strip(), bool(secure)
     m = re.match(r"^(https?)://(.*)$", host, re.I)
     if m:
         secure, host = m.group(1).lower() == "https", m.group(2)
@@ -1043,6 +1051,26 @@ def webapp_clean(body: WebAppIn):
         port = 443 if secure else 80
     if not 1 <= port <= 65535:
         raise HTTPException(400, "The port should be a number from 1 to 65535")
+    return host, port, secure
+
+
+def webapp_clean(body: WebAppIn):
+    """Returns name, host, port, secure, kind, runs_on, addrs. host/port/secure are the first address, kept for older code.
+    addrs is saved only when there is more than one address."""
+    if body.addrs:
+        if len(body.addrs) > 5:
+            raise HTTPException(400, "Five addresses is the most")
+        cleaned = []
+        for i, a in enumerate(body.addrs):
+            try:
+                h, p, sec = addr_clean(a.host, a.port, a.secure)
+            except HTTPException as e:
+                raise HTTPException(400, f"Address {i + 1}: {e.detail}") from None
+            cleaned.append({"label": (a.label or "").strip()[:20], "host": h, "port": p, "secure": sec})
+    else:
+        h, p, sec = addr_clean(body.host, body.port, body.secure)
+        cleaned = [{"label": "", "host": h, "port": p, "secure": sec}]
+    host, port, secure = cleaned[0]["host"], cleaned[0]["port"], cleaned[0]["secure"]
     kind = body.kind if body.kind in ("truepilot", "other") else "other"
     runs_on = body.runs_on.strip()
     if runs_on:
@@ -1050,11 +1078,20 @@ def webapp_clean(body: WebAppIn):
         found = i.isdigit() and ((k == "pc" and db.one("SELECT 1 AS x FROM wol_targets WHERE id=?", (int(i),))) or (k == "dev" and db.one("SELECT 1 AS x FROM devices WHERE id=?", (int(i),))))
         if not found:
             raise HTTPException(400, "Pick a PC or NAS from the list")
-    return (body.name.strip() or host)[:60], host, port, 1 if secure else 0, kind, runs_on
+    return (body.name.strip() or host)[:60], host, port, 1 if secure else 0, kind, runs_on, (json.dumps(cleaned) if len(cleaned) > 1 else "")
 
 
 def webapp_url(secure, host, port):
     return f"{'https' if secure else 'http'}://{host}" + ("" if port == (443 if secure else 80) else f":{port}")
+
+
+def webapp_addrs(r):
+    """Every address of a Web App, in the order they are tried."""
+    try:
+        extra = json.loads(r["addrs"] or "[]")
+    except ValueError:
+        extra = []
+    return extra if extra else [{"label": "", "host": r["host"], "port": r["port"], "secure": bool(r["secure"])}]
 
 
 webapp_cache = {"key": None, "t": 0, "states": []}
@@ -1062,14 +1099,20 @@ webapp_cache = {"key": None, "t": 0, "states": []}
 
 async def webapps_with_status():
     rows = db.q("SELECT * FROM web_apps ORDER BY name COLLATE NOCASE")
-    key = [(r["id"], r["host"], r["port"]) for r in rows]
+    lists = [webapp_addrs(r) for r in rows]
+    flat = [(a["host"], a["port"]) for lst in lists for a in lst]
+    key = [(r["id"], tuple(flat_i for flat_i in [(a["host"], a["port"]) for a in lst])) for r, lst in zip(rows, lists)]
     if webapp_cache["key"] == key and time.time() - webapp_cache["t"] < 3:
         states = webapp_cache["states"]
     else:
-        states = await asyncio.gather(*[net.tcp_ok(r["host"], r["port"], 1.2) for r in rows])
+        states = await asyncio.gather(*[net.tcp_ok(h, p, 1.2) for h, p in flat])
         webapp_cache.update(key=key, t=time.time(), states=states)
-    out = []
-    for r, up in zip(rows, states):
+    out, n = [], 0
+    for r, lst in zip(rows, lists):
+        ups = list(states[n:n + len(lst)])
+        n += len(lst)
+        best = next((i for i, u in enumerate(ups) if u), None)
+        pick = lst[best if best is not None else 0]
         k, _, i = (r["runs_on"] or "").partition(":")
         name = wake_id = None
         if k == "pc" and i.isdigit():
@@ -1079,7 +1122,9 @@ async def webapps_with_status():
             x = db.one("SELECT name FROM devices WHERE id=?", (int(i),))
             name, wake_id = (x["name"] if x else None), f"dev{i}"
         out.append({"id": r["id"], "name": r["name"], "host": r["host"], "port": r["port"], "secure": bool(r["secure"]), "kind": r["kind"], "runs_on": r["runs_on"] or "",
-                    "runs_on_name": name, "wake_id": wake_id if name else None, "url": webapp_url(r["secure"], r["host"], r["port"]), "state": "on" if up else "off"})
+                    "runs_on_name": name, "wake_id": wake_id if name else None, "url": webapp_url(pick["secure"], pick["host"], pick["port"]),
+                    "state": "on" if best is not None else "off", "active": best,
+                    "addrs": [{**a, "url": webapp_url(a["secure"], a["host"], a["port"]), "state": "on" if u else "off"} for a, u in zip(lst, ups)]})
     return out
 
 
@@ -1091,14 +1136,22 @@ async def list_webapps(s=Depends(auth)):
 @app.post("/api/webapps/test")
 async def test_webapp(body: WebAppIn, s=Depends(auth)):
     body.runs_on = ""
-    n, host, port, secure, kind, _ = webapp_clean(body)
-    return {"up": await net.tcp_ok(host, port, 2.5), "address": f"{host}:{port}", "url": webapp_url(secure, host, port)}
+    n, host, port, secure, kind, _, extra = webapp_clean(body)
+    lst = json.loads(extra) if extra else [{"label": "", "host": host, "port": port, "secure": bool(secure)}]
+
+    async def one(a):
+        t = time.time()
+        up = await net.tcp_ok(a["host"], a["port"], 2.5)
+        return {**a, "address": f"{a['host']}:{a['port']}", "url": webapp_url(a["secure"], a["host"], a["port"]), "up": bool(up), "ms": int((time.time() - t) * 1000)}
+    res = await asyncio.gather(*[one(a) for a in lst])
+    best = next((x for x in res if x["up"]), None) or res[0]
+    return {"up": any(x["up"] for x in res), "address": best["address"], "url": best["url"], "addrs": res}
 
 
 @app.post("/api/webapps")
 async def add_webapp(body: WebAppIn, s=Depends(auth)):
-    n, host, port, secure, kind, runs_on = webapp_clean(body)
-    db.x("INSERT INTO web_apps(name,host,port,secure,kind,runs_on) VALUES(?,?,?,?,?,?)", (n, host, port, secure, kind, runs_on))
+    n, host, port, secure, kind, runs_on, extra = webapp_clean(body)
+    db.x("INSERT INTO web_apps(name,host,port,secure,kind,runs_on,addrs) VALUES(?,?,?,?,?,?,?)", (n, host, port, secure, kind, runs_on, extra))
     webapp_cache["key"] = None
     audit(s["label"], 0, "add_web_app", n)
     return {"ok": True}
@@ -1106,8 +1159,8 @@ async def add_webapp(body: WebAppIn, s=Depends(auth)):
 
 @app.put("/api/webapps/{wid}")
 async def edit_webapp(wid: int, body: WebAppIn, s=Depends(auth)):
-    n, host, port, secure, kind, runs_on = webapp_clean(body)
-    db.x("UPDATE web_apps SET name=?,host=?,port=?,secure=?,kind=?,runs_on=? WHERE id=?", (n, host, port, secure, kind, runs_on, wid))
+    n, host, port, secure, kind, runs_on, extra = webapp_clean(body)
+    db.x("UPDATE web_apps SET name=?,host=?,port=?,secure=?,kind=?,runs_on=?,addrs=? WHERE id=?", (n, host, port, secure, kind, runs_on, extra, wid))
     webapp_cache["key"] = None
     return {"ok": True}
 

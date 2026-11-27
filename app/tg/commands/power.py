@@ -106,7 +106,8 @@ async def webapps_screen(call):
     out = ["🌐 <b>Web Apps</b>"]
     kb = []
     for r in rows[:14]:
-        out.append(f"{'🟢' if r['state'] == 'on' else '🔴'} {esc(r['name'])}")
+        act = (r.get("addrs") or [])[r["active"]] if r.get("active") is not None and len(r.get("addrs") or []) > 1 else None
+        out.append(f"{'🟢' if r['state'] == 'on' else '🔴'} {esc(r['name'])}" + (f" ({esc(act['label'] or act['host'])})" if act else ""))
         kb.append([B(f"🔗 {r['name']}", url=r["url"])] + ([B("⏻ Wake host", f"w:{r['wake_id']}")] if r["state"] != "on" and r.get("wake_id") else []))
     if not rows:
         out.append("No Web Apps yet. Add them in TruePilot under Power.")

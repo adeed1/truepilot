@@ -93,7 +93,7 @@ setInterval(() => { tgPoll(); if (S.auth !== 'in' || document.hidden) return; co
 /* ---------- gate screens ---------- */
 const gateWrap = (...kids) => h('div', { class: 'gate' }, h('div', { class: 'logo' }, 'TruePilot'), ...kids);
 const pwField = (text, id, ac) => h('label', { class: 'f' }, text, h('input', { type: 'password', id, autocomplete: ac || 'current-password' }));
-function msgBox() { const m = h('div'); m.set = (t, bad = true) => m.replaceChildren(t ? h('p', { class: 'note' + (bad ? ' bad' : ' ok') }, t) : ''); return m; }
+function msgBox() { const m = h('div'); m.set = (t, bad = true) => m.replaceChildren(t ? h('p', { class: 'note' + (bad ? ' bad' : ' ok'), style: 'white-space:pre-line' }, t) : ''); return m; }
 
 function gateSetup() {
   const m = msgBox(), a = pwField('New password (8 or more characters)', 'pw', 'new-password'), b = pwField('Repeat password', 'pw2', 'new-password');
@@ -479,26 +479,44 @@ function webRow(a) {
   return h('div', { class: 'row wrow', role: 'link', tabindex: '0', 'aria-label': 'Open ' + a.name, onclick: () => openWebApp(a), onkeydown: e => { if (e.key === 'Enter') openWebApp(a); } },
     lamp(a.state === 'on' ? 'ok' : 'bad'), h('div', { class: 't' }, a.name, a.kind === 'truepilot' && h('span', { class: 'chip', style: 'margin-left:8px' }, 'TruePilot')),
     h('span', { class: 'tail', style: 'display:flex;gap:6px;align-items:center' }, canWake && h('button', { class: 'btn small', onclick: e => { e.stopPropagation(); wakePc(pc); } }, 'Wake'), h('button', { class: 'btn small ghost', 'aria-label': 'Edit ' + a.name, onclick: e => { e.stopPropagation(); webForm(a); } }, 'Edit')),
-    h('div', { class: 's' }, `${a.host}:${a.port}${a.runs_on_name ? ', runs on ' + a.runs_on_name : ''}`));
+    h('div', { class: 's' }, ((a.addrs && a.addrs.length > 1) ? (a.active != null ? `${a.addrs[a.active].label || 'Address ' + (a.active + 1)}, ${a.addrs[a.active].host}:${a.addrs[a.active].port}` : `${a.addrs.length} addresses, none answering`) : `${a.host}:${a.port}`) + (a.runs_on_name ? ', runs on ' + a.runs_on_name : '')));
 }
 function webForm(a) {
-  const f = {}, out = msgBox(), inp = (k, v, o = {}) => (f[k] = h('input', Object.assign({ type: 'text', autocomplete: 'off', value: v == null ? '' : v }, o)));
-  inp('name', a?.name || '', { placeholder: 'TrueNAS' }); inp('host', a ? a.host : '', { placeholder: '192.168.1.50' }); inp('port', a ? a.port : '', { inputmode: 'numeric', placeholder: '8080' });
-  let secure = !!a?.secure, touched = !!a, kind = a?.kind || 'other';
-  const sec = h('input', { type: 'checkbox', checked: secure, onchange: e => { secure = e.target.checked; touched = true; } });
+  const out = msgBox(), name = h('input', { type: 'text', autocomplete: 'off', value: a?.name || '', placeholder: 'Jellyfin' });
+  let kind = a?.kind || 'other';
+  const rows = (a && a.addrs && a.addrs.length ? a.addrs : [{ label: '', host: a ? a.host : '', port: a ? a.port : '', secure: !!(a && a.secure) }]).map(x => ({ label: x.label || '', host: x.host || '', port: x.port == null ? '' : String(x.port), secure: !!x.secure, touched: !!a }));
+  const LB = ['', 'Home', 'Away', 'Name', 'Other'], box = h('div', {}), hint = h('p', { class: 'note' });
+  const norm = r => { let t = r.host.trim(); const m = t.match(/^(https?):\/\/(.*)$/i); if (m) { r.secure = m[1].toLowerCase() === 'https'; r.touched = true; t = m[2]; } t = t.split(/[\/?#]/)[0]; const pm = t.match(/^([^:]+):(\d{1,5})$/); if (pm) { t = pm[1]; r.port = pm[2]; } r.host = t; if (!r.touched) r.secure = ['443', '8443'].includes(String(r.port).trim()); };
+  const move = (i, d) => { const j = i + d; if (j < 0 || j >= rows.length) return; [rows[i], rows[j]] = [rows[j], rows[i]]; draw(); };
+  const rowEl = (r, i) => {
+    const host = h('input', { type: 'text', autocomplete: 'off', value: r.host, placeholder: '192.168.1.50', style: 'flex:1;min-width:0', 'aria-label': 'IP address or name, address ' + (i + 1) }), port = h('input', { type: 'text', inputmode: 'numeric', value: r.port, placeholder: '8080', style: 'width:76px', 'aria-label': 'Port, address ' + (i + 1) });
+    const sec = h('input', { type: 'checkbox', checked: r.secure, onchange: e => { r.secure = e.target.checked; r.touched = true; } });
+    const sync = () => { r.host = host.value; r.port = port.value; norm(r); host.value = r.host; port.value = r.port; sec.checked = r.secure; };
+    host.addEventListener('change', sync); port.addEventListener('change', sync); host.addEventListener('input', () => { r.host = host.value; }); port.addEventListener('input', () => { r.port = port.value; });
+    const lab = h('select', { 'aria-label': 'Label, address ' + (i + 1), onchange: e => { r.label = e.target.value; } }, LB.map(v => h('option', { value: v, selected: v === r.label }, v || 'No label')));
+    const many = rows.length > 1;
+    return h('div', { style: 'padding:10px 0;' + (i ? 'border-top:1px solid var(--line)' : '') },
+      h('div', { style: 'display:flex;gap:6px;align-items:center;margin-bottom:6px' }, h('span', { class: 's', style: 'min-width:18px' }, String(i + 1)), lab, h('span', { style: 'flex:1' }),
+        many && h('button', { type: 'button', class: 'btn small ghost', 'aria-label': 'Move up', disabled: i === 0, onclick: () => move(i, -1) }, '\u2191'), many && h('button', { type: 'button', class: 'btn small ghost', 'aria-label': 'Move down', disabled: i === rows.length - 1, onclick: () => move(i, 1) }, '\u2193'),
+        many && h('button', { type: 'button', class: 'btn small ghost', 'aria-label': 'Remove this address', onclick: () => { rows.splice(i, 1); draw(); } }, '\u2715')),
+      h('div', { style: 'display:flex;gap:6px;align-items:center' }, host, port, h('label', { class: 'check', style: 'margin:0;white-space:nowrap' }, sec, 'Secure')));
+  };
+  const draw = () => { box.replaceChildren(...rows.map(rowEl)); hint.textContent = rows.length > 1 ? 'TruePilot tries them from the top and opens the first one that answers.' : 'Add another address if this app can be reached more than one way, like at home and away.'; add.style.display = rows.length >= 5 ? 'none' : ''; };
+  const add = h('button', { type: 'button', class: 'btn ghost small', onclick: () => { rows.push({ label: rows.length === 1 ? 'Away' : 'Other', host: '', port: '', secure: false, touched: false }); draw(); } }, '+ Add another address');
   const runs = h('select', {}, [['', 'Nothing'], ...S.devices.filter(d => d.kind !== 'demo').map(d => ['dev:' + d.id, d.name + ' (NAS)']), ...S.pcs.filter(p => p.kind === 'pc').map(p => ['pc:' + p.id, p.name])].map(([v, t]) => h('option', { value: v, selected: v === (a?.runs_on || '') }, t)));
-  const norm = () => { let t = f.host.value.trim(); const m = t.match(/^(https?):\/\/(.*)$/i); if (m) { secure = m[1].toLowerCase() === 'https'; touched = true; sec.checked = secure; t = m[2]; } t = t.split(/[\/?#]/)[0]; const pm = t.match(/^([^:]+):(\d{1,5})$/); if (pm) { t = pm[1]; f.port.value = pm[2]; } f.host.value = t; if (!touched) { secure = ['443', '8443'].includes(f.port.value.trim()); sec.checked = secure; } };
-  f.host.addEventListener('change', norm); f.port.addEventListener('change', norm);
-  const body = () => { norm(); return { name: f.name.value, host: f.host.value, port: Number(f.port.value) || null, secure, kind, runs_on: runs.value }; };
+  const body = () => { rows.forEach(norm); const r0 = rows[0]; return { name: name.value, host: r0.host, port: Number(r0.port) || null, secure: r0.secure, kind, runs_on: runs.value, addrs: rows.length > 1 ? rows.map(r => ({ label: r.label, host: r.host, port: Number(r.port) || null, secure: r.secure })) : undefined }; };
   const seg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Type' }, [['truepilot', 'TruePilot'], ['other', 'Other']].map(([v, t]) => h('button', { type: 'button', 'aria-pressed': String(kind === v), onclick: e => { kind = v; [...e.currentTarget.parentNode.children].forEach(b => b.setAttribute('aria-pressed', String(b === e.currentTarget))); } }, t)));
   const test = h('button', { class: 'btn ghost', type: 'button' }, 'Test');
   test.onclick = async () => { const b = body(); if (!b.host) return out.set('Enter the IP address or name first.'); test.disabled = true; out.set('Checking...', false);
-    try { const r = await api('/webapps/test', { method: 'POST', body: b }); if (r.up) out.set(`Answering at ${r.address}.`, false); else out.set(`No answer at ${r.address}. It may be off, or the port may be different.`); } catch (e) { out.set(e.message); } test.disabled = false; };
+    try { const r = await api('/webapps/test', { method: 'POST', body: b });
+      if (r.addrs && r.addrs.length > 1) out.set(r.addrs.map((x, i) => `${i + 1}. ${x.label ? x.label + ', ' : ''}${x.address}: ${x.up ? 'answering (' + (x.ms / 1000).toFixed(1) + ' s)' : 'no answer'}`).join('\n') + (r.up ? `\nOpen will use ${r.address}.` : '\nNone answer right now.'), !!r.up);
+      else if (r.up) out.set(`Answering at ${r.address}.`, false); else out.set(`No answer at ${r.address}. It may be off, or the port may be different.`); } catch (e) { out.set(e.message); } test.disabled = false; };
   const save = h('button', { class: 'btn' }, 'Save'); save.onclick = async () => { try { await api(a ? '/webapps/' + a.id : '/webapps', { method: a ? 'PUT' : 'POST', body: body() }); closeDlg(); S.last = 0; pollNow(); toast('Saved'); } catch (e) { out.set(e.message); } };
   const del = a && h('button', { class: 'btn ghost danger', style: 'margin-right:auto', onclick: async () => { if (confirm(`Remove ${a.name}?`)) { await api('/webapps/' + a.id, { method: 'DELETE' }); closeDlg(); S.last = 0; pollNow(); } } }, 'Remove');
   const L = (t, el, help) => h('label', { class: 'f' }, t, el, help && h('small', {}, help));
-  modal(a ? 'Edit Web App' : 'Add a Web App', h('div', {}, L('Name', f.name), L('IP address or name', f.host, 'You can also type 192.168.1.50:8080 here and the port moves to its own box.'), L('Port', f.port, 'Optional. Leave blank for 80, or 443 when Secure is ticked.'),
-    h('label', { class: 'check' }, sec, 'Secure (https)'), h('div', { class: 'f', style: 'display:flex;flex-direction:column;align-items:flex-start;gap:4px;margin-bottom:12px' }, 'Type', seg, h('small', {}, 'In the phone app, TruePilot opens inside the app. Anything else opens in the browser.')), L('Runs on', runs, 'Optional. Lets you wake that machine from here and pick it in schedules.'), out), [del, h('button', { class: 'btn ghost', onclick: closeDlg }, 'Cancel'), test, save]);
+  draw();
+  modal(a ? 'Edit Web App' : 'Add a Web App', h('div', {}, L('Name', name), h('div', { class: 'f', style: 'margin-bottom:4px' }, 'Addresses', h('small', { style: 'display:block;margin-top:3px;font-size:12px' }, 'An IP address or name. You can also type 192.168.1.50:8080 and the port moves to its own box.')), box, add, hint,
+    h('div', { class: 'f', style: 'display:flex;flex-direction:column;align-items:flex-start;gap:4px;margin:12px 0' }, 'Type', seg, h('small', {}, 'In the phone app, TruePilot opens inside the app. Anything else opens in the browser.')), L('Runs on', runs, 'Optional. Lets you wake that machine from here and pick it in schedules.'), out), [del, h('button', { class: 'btn ghost', onclick: closeDlg }, 'Cancel'), test, save]);
 }
 function pcForm(p) {
   const f = {}, inp = (k, v, o = {}) => (f[k] = h('input', Object.assign({ type: 'text', autocomplete: 'off', value: v == null ? '' : v }, o))), out = msgBox();
@@ -516,16 +534,34 @@ function pcForm(p) {
 async function loadSched() { S.sched = await api('/schedules'); return S.sched; }
 async function pageSched() {
   let data; try { data = await loadSched(); } catch (e) { return h('p', { class: 'note bad' }, e.message); }
+  const pst = S.me.app ? await api('/phone-alarms').catch(e => ({ available: false, error: e.message, log: [] })) : null;
   const d = dev(), can = writeOn(d, S.res), jobs = data.jobs, refresh = () => renderMain();
   const row = j => h('div', { class: 'row' }, lamp(j.enabled ? 'ok' : 'off'), h('div', { class: 't' }, j.name), h('button', { class: 'sw', role: 'switch', 'aria-checked': String(!!j.enabled), 'aria-label': (j.enabled ? 'Pause ' : 'Resume ') + j.name, style: 'grid-row:span 3;grid-column:3',
     onclick: async () => { try { await api('/schedules/' + j.id, { method: 'PATCH', body: { enabled: !j.enabled } }); refresh(); } catch (e) { toast(e.message, true); } } }),
     h('div', { class: 's' }, `${describeCron(j.cron)}${j.target_name ? ', ' + j.target_name : ''}`), h('div', { class: 's' }, j.enabled ? 'Next: ' + when(j.next_run) : 'Paused'), j.last_result && h('div', { class: 's' }, 'Last: ' + j.last_result.replace(/^ok: /, '')),
     h('div', { class: 's', style: 'display:flex;gap:10px' }, j.command && h('details', {}, h('summary', {}, 'Command'), h('div', { class: 'mono' }, j.command)), h('button', { class: 'link', onclick: async () => { if (confirm(`Delete "${j.name}"?`)) { try { await api('/schedules/' + j.id, { method: 'DELETE' }); refresh(); } catch (e) { toast(e.message, true); } } } }, 'Delete')));
-  const local = jobs.filter(j => j.kind !== 'host'), host = jobs.filter(j => j.kind === 'host');
+  const local = jobs.filter(j => j.kind !== 'host' && j.kind !== 'phone'), host = jobs.filter(j => j.kind === 'host'), phone = jobs.filter(j => j.kind === 'phone');
   return h('div', {}, h('div', { class: 'dh' }, h('h1', {}, 'Schedules'), h('button', { class: 'btn small', onclick: () => schedForm(refresh) }, 'New schedule')),
-    h('div', { class: 'grid' }, !S.me.app && h('section', { class: 'card' + (wakeOnly() ? ' wide' : '') }, h('div', { class: 'ch' }, h('h3', {}, 'Runs on this computer', h('span', { class: 'sub' }, `${data.computer}. TruePilot must stay running.`))), local.length ? local.map(row) : h('p', { class: 'empty' }, 'Nothing here yet.')),
+    h('div', { class: 'grid' }, S.me.app && phoneCard(row, phone, pst), !S.me.app && h('section', { class: 'card' + (wakeOnly() ? ' wide' : '') }, h('div', { class: 'ch' }, h('h3', {}, 'Runs on this computer', h('span', { class: 'sub' }, `${data.computer}. TruePilot must stay running.`))), local.length ? local.map(row) : h('p', { class: 'empty' }, 'Nothing here yet.')),
       !wakeOnly() && h('section', { class: 'card' + (S.me.app ? ' wide' : '') }, h('div', { class: 'ch' }, h('h3', {}, 'Runs inside TrueNAS', h('span', { class: 'sub' }, S.me.app ? 'Cron jobs. They keep running when your phone is off.' : 'Cron jobs. They still run if TruePilot is stopped.'))), host.length ? host.map(row) : h('p', { class: 'empty' }, 'Nothing here yet.'))),
     !can && !wakeOnly() && h('p', { class: 'note', style: 'margin-top:12px' }, 'App and NAS schedules need write access. Add a write key and turn on actions in Settings. Wake schedules always work.'));
+}
+function phoneCard(row, jobs, st) {
+  const ask = async kind => { try { await api('/phone-alarms/settings', { method: 'POST', body: { kind } }); } catch (e) { toast(e.message, true); } };
+  const item = (ok, title, help, btn, kind) => h('div', { class: 'row' }, lamp(ok ? 'ok' : 'warn'), h('div', { class: 't' }, title), !ok && h('button', { class: 'btn small', style: 'grid-row:span 2;grid-column:3', onclick: () => ask(kind) }, btn), h('div', { class: 's' }, ok ? 'OK' : help));
+  const head = h('div', { class: 'ch' }, h('h3', {}, 'Phone alarms', h('span', { class: 'sub' }, 'This phone sends the wake at the set time. Keep it on, on your home Wi-Fi.')));
+  if (!st || !st.available) return h('section', { class: 'card wide' }, head, jobs.map(row), h('p', { class: 'note bad', style: 'margin:12px' }, (st && st.error) || 'Phone alarms are not available in this copy of the app.'));
+  const tsel = h('select', {}, S.pcs.map(p => h('option', { value: p.id }, p.name))), test = h('button', { class: 'btn small' }, 'Send a test wake');
+  test.onclick = async () => { test.disabled = true; try { await api('/phone-alarms/test', { method: 'POST', body: { target: tsel.value } }); toast('Test started. A notification shows what happened.'); } catch (e) { toast(e.message, true); } test.disabled = false; };
+  const sam = st.manufacturer === 'samsung';
+  return h('section', { class: 'card wide' }, head, jobs.length ? jobs.map(row) : h('p', { class: 'empty' }, 'No phone alarms yet. Press New schedule, choose Wake a device, and tick Send from this phone.'),
+    h('div', { class: 'ch' }, h('h3', {}, 'Set up this phone', h('span', { class: 'sub' }, 'Do these once so the alarm is allowed to run'))),
+    item(st.notifications, 'Notifications', 'Needed to tell you what happened.', 'Allow', st.sdk >= 33 ? 'request_notifications' : 'notifications'),
+    item(st.exact, 'Exact alarms', 'Needed to wake at the exact minute.', 'Allow', 'exact_alarm'),
+    item(st.battery, 'Battery: unrestricted', 'Android may put the app to sleep and miss the alarm.', 'Set', 'battery'),
+    sam && h('p', { class: 'note', style: 'margin:12px' }, 'Samsung also keeps its own sleeping lists. Open Settings, Battery, Background usage limits. Make sure TruePilot is not under Sleeping apps or Deep sleeping apps, and add it to Never sleeping apps. In Settings, Apps, TruePilot, Battery, choose Unrestricted.'),
+    h('div', { class: 'row' }, lamp('off'), h('div', { class: 't' }, 'Try it now'), h('div', { class: 's', style: 'grid-column:2 / -1;display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, tsel, test), h('div', { class: 's', style: 'grid-column:2 / -1' }, 'If the device is already on, the test says so and sends nothing. Try it while the device is off.')),
+    (st.log || []).length ? h('div', { class: 'row' }, lamp('off'), h('div', { class: 't' }, 'Recent results'), ...st.log.slice(0, 5).map(x => h('div', { class: 's', style: 'grid-column:2 / -1' }, `${when(x.ts)}: ${String(x.result).replace(/^ok: /, '')}`))) : '');
 }
 function schedForm(done) {
   const d = dev(), apps = S.res?.snapshot?.apps || [], wo = wakeOnly();
@@ -536,17 +572,18 @@ function schedForm(done) {
   const freq = h('select', {}, [['daily', 'Every day'], ['wd', 'Weekdays'], ['we', 'Weekends'], ['days', 'Certain days'], ['custom', 'Custom (cron)']].map(([v, t]) => h('option', { value: v }, t)));
   const time = h('input', { type: 'time', value: '07:30' }), cron = h('input', { type: 'text', value: '30 7 * * *', class: 'mono' });
   const days = DOW.map((n, i) => h('label', { class: 'check', style: 'margin:0' }, h('input', { type: 'checkbox', value: i, checked: i === 1 }), n)), dayWrap = h('div', { style: 'display:flex;flex-wrap:wrap;gap:4px 14px;margin-bottom:12px' }, days);
+  let phoneTouched = false; const phoneBox = h('input', { type: 'checkbox', onchange: () => { phoneTouched = true; sync(); } }), phoneWrap = h('label', { class: 'check' }, phoneBox, 'Send from this phone');
   const cronWrap = h('label', { class: 'f' }, 'Cron (minute hour day month weekday)', cron), timeWrap = h('label', { class: 'f' }, 'At what time', time), warn = h('div'), prev = h('p', { class: 'mute small' }), msg = msgBox();
   const build = () => { if (freq.value === 'custom') return cron.value.trim(); const [hh, mm] = (time.value || '07:30').split(':').map(Number), dw = { daily: '*', wd: '1-5', we: '0,6', days: days.filter(l => l.firstChild.checked).map(l => l.firstChild.value).join(',') || '*' }[freq.value]; return `${mm} ${hh} * * ${dw}`; };
   let tm; const showPrev = () => { clearTimeout(tm); tm = setTimeout(async () => { try { const r = await api('/schedules/preview?cron=' + encodeURIComponent(build())); prev.textContent = r.ok ? 'Next runs: ' + r.runs.map(when).join(', ') : 'That schedule isn\'t valid yet.'; } catch (e) { /* ignore */ } }, 250); };
-  const sync = () => { const a = action.value, host = a.endsWith('_host');
-    target.replaceChildren(...(a === 'wake_device' ? [...S.pcs.map(p => h('option', { value: p.id }, p.name)), ...S.webapps.filter(w => w.wake_id != null).map(w => h('option', { value: w.wake_id }, `${w.name} (runs on ${w.runs_on_name})`))] : apps.map(x => h('option', { value: x.name }, x.title)))); tWrap.style.display = host ? 'none' : '';
+  const sync = () => { const a = action.value, host = a.endsWith('_host'), keepT = target.value;
+    target.replaceChildren(...(a === 'wake_device' ? [...S.pcs.map(p => h('option', { value: p.id }, p.name)), ...S.webapps.filter(w => w.wake_id != null).map(w => h('option', { value: w.wake_id }, `${w.name} (runs on ${w.runs_on_name})`))] : apps.map(x => h('option', { value: x.name }, x.title)))); if ([...target.options].some(o => o.value === keepT)) target.value = keepT; tWrap.style.display = host ? 'none' : ''; const wk = S.me.app && a === 'wake_device'; if (wk && !phoneTouched) phoneBox.checked = String(target.value).startsWith('dev'); phoneWrap.style.display = wk ? '' : 'none';
     dayWrap.style.display = freq.value === 'days' ? '' : 'none'; cronWrap.style.display = freq.value === 'custom' ? '' : 'none'; timeWrap.style.display = freq.value === 'custom' ? 'none' : '';
-    warn.replaceChildren(host ? h('p', { class: 'note' }, 'This creates a cron job inside TrueNAS, so it still runs if TruePilot is stopped. It skips itself while a scrub, replication or upgrade is running.' + (a === 'shutdown_host' ? ' After a shutdown the NAS stays off until you wake it.' : '')) : a === 'wake_device' ? h('p', { class: 'note ok' }, S.me.app ? 'TrueNAS sends the wake packet, so the NAS must be on at that time. It skips the wake if the PC is already on.' : 'Runs on this computer. TruePilot must be running at that time, and it skips the wake if the PC is already on.') : ''); showPrev(); };
-  [action, freq, time, cron].forEach(e => e.addEventListener('input', sync)); days.forEach(l => l.addEventListener('change', sync));
+    warn.replaceChildren(host ? h('p', { class: 'note' }, 'This creates a cron job inside TrueNAS, so it still runs if TruePilot is stopped. It skips itself while a scrub, replication or upgrade is running.' + (a === 'shutdown_host' ? ' After a shutdown the NAS stays off until you wake it.' : '')) : a === 'wake_device' ? h('p', { class: 'note ok' }, S.me.app ? (phoneBox.checked ? 'This phone sends the wake at that time, even when TruePilot is closed. The phone must be on and on your home Wi-Fi. Set it up under Phone alarms on the Schedules page. It tells you what happened.' : 'TrueNAS sends the wake packet, so the NAS must be on at that time. It cannot wake the NAS itself. For that, tick Send from this phone. It skips the wake if the PC is already on.') : 'Runs on this computer. TruePilot must be running at that time, and it skips the wake if the PC is already on.') : ''); showPrev(); };
+  [action, freq, time, cron].forEach(e => e.addEventListener('input', sync)); target.addEventListener('change', () => { phoneTouched = false; sync(); }); days.forEach(l => l.addEventListener('change', sync));
   const save = h('button', { class: 'btn' }, 'Save schedule');
-  save.onclick = async () => { save.disabled = true; msg.set(''); const a = action.value; try { await api('/schedules', { method: 'POST', body: { device_id: a === 'wake_device' ? null : d?.id, name: name.value || action.selectedOptions[0].text, action: a, target: a.endsWith('_host') ? '' : String(target.value || ''), cron: build() } }); closeDlg(); toast('Schedule saved'); done(); } catch (e) { msg.set(e.message); save.disabled = false; } };
-  modal('New schedule', h('div', {}, h('label', { class: 'f' }, 'Name (optional)', name), h('label', { class: 'f' }, 'What to do', action), tWrap, h('label', { class: 'f' }, 'How often', freq), dayWrap, timeWrap, cronWrap, warn, prev, msg), [h('button', { class: 'btn ghost', onclick: closeDlg }, 'Cancel'), save]); sync();
+  save.onclick = async () => { save.disabled = true; msg.set(''); const a = action.value; try { await api('/schedules', { method: 'POST', body: { device_id: a === 'wake_device' && !(S.me.app && phoneBox.checked) ? null : d?.id, name: name.value || action.selectedOptions[0].text, action: a, target: a.endsWith('_host') ? '' : String(target.value || ''), cron: build(), where: S.me.app && a === 'wake_device' && phoneBox.checked ? 'phone' : undefined } }); closeDlg(); toast('Schedule saved'); done(); } catch (e) { msg.set(e.message); save.disabled = false; } };
+  modal('New schedule', h('div', {}, h('label', { class: 'f' }, 'Name (optional)', name), h('label', { class: 'f' }, 'What to do', action), tWrap, phoneWrap, h('label', { class: 'f' }, 'How often', freq), dayWrap, timeWrap, cronWrap, warn, prev, msg), [h('button', { class: 'btn ghost', onclick: closeDlg }, 'Cancel'), save]); sync();
 }
 
 /* ---------- Settings ---------- */

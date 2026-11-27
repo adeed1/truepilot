@@ -47,6 +47,9 @@ class DB:
             for col, typ in (("ip", "TEXT"), ("port", "INTEGER")):
                 if col not in cols:
                     self.c.execute(f"ALTER TABLE wol_targets ADD COLUMN {col} {typ}")
+            wcols = [r[1] for r in self.c.execute("PRAGMA table_info(web_apps)")]
+            if "addrs" not in wcols:
+                self.c.execute("ALTER TABLE web_apps ADD COLUMN addrs TEXT")
             acols = [r[1] for r in self.c.execute("PRAGMA table_info(approvals)")]
             for col in ("params", "summary"):
                 if col not in acols:

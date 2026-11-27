@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-VERSION = "2.8.3"
+VERSION = "2.9.0"
 
 
 def env(name, default=None):
