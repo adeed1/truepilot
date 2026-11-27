@@ -6,11 +6,13 @@
   --r: 8px; --tb: 54px; --side: 212px; --tab: 58px;
 }
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #12171E; --surf: #1B222B; --surf2: #222B36; --ink: #E6EDF3; --mute: #93A1B0; --line: #2D3845; --track: #2A3440;
   --acc: #3AA8E8; --acc-ink: #08121A; --acc-bg: #16303F; --ok: #34C38F; --warn: #E3A93C; --bad: #F0625A; --unk: #6B7B88;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #12171E; --surf: #1B222B; --surf2: #222B36; --ink: #E6EDF3; --mute: #93A1B0; --line: #2D3845; --track: #2A3440;
     --acc: #3AA8E8; --acc-ink: #08121A; --acc-bg: #16303F; --ok: #34C38F; --warn: #E3A93C; --bad: #F0625A; --unk: #6B7B88;
   }
@@ -208,3 +210,7 @@ pre.logs { background: var(--bg); border: 1px solid var(--line); border-radius: 
 @media (min-width: 900px) { .selbar { left: calc(var(--side) + 22px); right: 22px; bottom: 16px; } .collapsed .selbar { left: 84px; } }
 
 .wrow { cursor: pointer; } .wrow:hover { background: rgba(127,127,127,.08); } .wrow:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
+
+/* text boxes and dropdowns that sit outside a label.f (the Web App address rows, the test-wake picker) */
+.fld { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surf2); color: var(--ink); font: inherit; }
+.fld::placeholder { color: var(--mute); opacity: .75; }

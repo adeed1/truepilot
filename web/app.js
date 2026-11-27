@@ -489,11 +489,11 @@ function webForm(a) {
   const norm = r => { let t = r.host.trim(); const m = t.match(/^(https?):\/\/(.*)$/i); if (m) { r.secure = m[1].toLowerCase() === 'https'; r.touched = true; t = m[2]; } t = t.split(/[\/?#]/)[0]; const pm = t.match(/^([^:]+):(\d{1,5})$/); if (pm) { t = pm[1]; r.port = pm[2]; } r.host = t; if (!r.touched) r.secure = ['443', '8443'].includes(String(r.port).trim()); };
   const move = (i, d) => { const j = i + d; if (j < 0 || j >= rows.length) return; [rows[i], rows[j]] = [rows[j], rows[i]]; draw(); };
   const rowEl = (r, i) => {
-    const host = h('input', { type: 'text', autocomplete: 'off', value: r.host, placeholder: '192.168.1.50', style: 'flex:1;min-width:0', 'aria-label': 'IP address or name, address ' + (i + 1) }), port = h('input', { type: 'text', inputmode: 'numeric', value: r.port, placeholder: '8080', style: 'width:76px', 'aria-label': 'Port, address ' + (i + 1) });
+    const host = h('input', { class: 'fld', type: 'text', autocomplete: 'off', value: r.host, placeholder: '192.168.1.50', style: 'flex:1;min-width:0', 'aria-label': 'IP address or name, address ' + (i + 1) }), port = h('input', { class: 'fld', type: 'text', inputmode: 'numeric', value: r.port, placeholder: '8080', style: 'width:76px', 'aria-label': 'Port, address ' + (i + 1) });
     const sec = h('input', { type: 'checkbox', checked: r.secure, onchange: e => { r.secure = e.target.checked; r.touched = true; } });
     const sync = () => { r.host = host.value; r.port = port.value; norm(r); host.value = r.host; port.value = r.port; sec.checked = r.secure; };
     host.addEventListener('change', sync); port.addEventListener('change', sync); host.addEventListener('input', () => { r.host = host.value; }); port.addEventListener('input', () => { r.port = port.value; });
-    const lab = h('select', { 'aria-label': 'Label, address ' + (i + 1), onchange: e => { r.label = e.target.value; } }, LB.map(v => h('option', { value: v, selected: v === r.label }, v || 'No label')));
+    const lab = h('select', { class: 'fld', 'aria-label': 'Label, address ' + (i + 1), onchange: e => { r.label = e.target.value; } }, LB.map(v => h('option', { value: v, selected: v === r.label }, v || 'No label')));
     const many = rows.length > 1;
     return h('div', { style: 'padding:10px 0;' + (i ? 'border-top:1px solid var(--line)' : '') },
       h('div', { style: 'display:flex;gap:6px;align-items:center;margin-bottom:6px' }, h('span', { class: 's', style: 'min-width:18px' }, String(i + 1)), lab, h('span', { style: 'flex:1' }),
@@ -551,7 +551,7 @@ function phoneCard(row, jobs, st) {
   const item = (ok, title, help, btn, kind) => h('div', { class: 'row' }, lamp(ok ? 'ok' : 'warn'), h('div', { class: 't' }, title), !ok && h('button', { class: 'btn small', style: 'grid-row:span 2;grid-column:3', onclick: () => ask(kind) }, btn), h('div', { class: 's' }, ok ? 'OK' : help));
   const head = h('div', { class: 'ch' }, h('h3', {}, 'Phone alarms', h('span', { class: 'sub' }, 'This phone sends the wake at the set time. Keep it on, on your home Wi-Fi.')));
   if (!st || !st.available) return h('section', { class: 'card wide' }, head, jobs.map(row), h('p', { class: 'note bad', style: 'margin:12px' }, (st && st.error) || 'Phone alarms are not available in this copy of the app.'));
-  const tsel = h('select', {}, S.pcs.map(p => h('option', { value: p.id }, p.name))), test = h('button', { class: 'btn small' }, 'Send a test wake');
+  const tsel = h('select', { class: 'fld' }, S.pcs.map(p => h('option', { value: p.id }, p.name))), test = h('button', { class: 'btn small' }, 'Send a test wake');
   test.onclick = async () => { test.disabled = true; try { await api('/phone-alarms/test', { method: 'POST', body: { target: tsel.value } }); toast('Test started. A notification shows what happened.'); } catch (e) { toast(e.message, true); } test.disabled = false; };
   const sam = st.manufacturer === 'samsung';
   return h('section', { class: 'card wide' }, head, jobs.length ? jobs.map(row) : h('p', { class: 'empty' }, 'No phone alarms yet. Press New schedule, choose Wake a device, and tick Send from this phone.'),
